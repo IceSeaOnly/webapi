@@ -13,6 +13,8 @@ import site.binghai.lib.utils.CompareUtils;
 import site.binghai.lib.utils.GroovyEngineUtils;
 import site.binghai.lib.utils.TokenGenerator;
 import site.binghai.lib.utils.UrlUtil;
+
+import java.security.PublicKey;
 import java.util.Map;
 
 /**
@@ -28,8 +30,12 @@ public class WebApiController extends BaseController {
     @Autowired
     private ApiCallLogService apiCallLogService;
 
+    private static final String API_NOT_EXIST = "api not exist.";
+    private static final String AUTH_FAIL = "鉴权失败.";
+
     @PostMapping("createWebApi")
     public Object createWebApi(@RequestBody Map map) {
+        logger.info("createWebApi");
         String responseBody = getString(map, "responseBody");
         String sourceIp = getSourceIp();
 
@@ -49,6 +55,7 @@ public class WebApiController extends BaseController {
         webApi = webApiService.save(webApi);
 
         ApiResponse response = new ApiResponse();
+        response.setName("[系统]首次创建");
         response.setCreateIp(sourceIp);
         response.setSequenceId(webApi.getId());
         response.setVersion(0);
@@ -80,7 +87,7 @@ public class WebApiController extends BaseController {
         }
 
         if (!hasEmptyString(api.getAuthCode()) && !api.getAuthCode().equals(authCode)) {
-            return fail("鉴权失败!");
+            return fail(AUTH_FAIL);
         }
 
         ApiResponse response = new ApiResponse();
@@ -88,11 +95,13 @@ public class WebApiController extends BaseController {
         response.setSequenceId(webApiId);
         response.setVersion(api.getNextVersion());
         response.setResponseBody(responseBody);
+        response.setName(name);
 
         apiResponseService.save(response);
         api.setNextVersion(api.getNextVersion() + 1);
         if (bind != null && bind == 1) {
             api.setResponseId(response.getId());
+            apiCallLogService.log(api.getId(), api.getResponseId(), null, null, "updateCurrentResponse", getSourceIp());
         }
         webApiService.update(api);
 
@@ -106,10 +115,10 @@ public class WebApiController extends BaseController {
         if (type == 0) {
             WebApi api = webApiService.findById(id);
             if (api == null || api.getDeleted()) {
-                return fail("api not exist.");
+                return fail(API_NOT_EXIST);
             }
             if (!hasEmptyString(api.getAuthCode()) && !api.getAuthCode().equals(authCode)) {
-                return fail("鉴权失败!");
+                return fail(AUTH_FAIL);
             }
             api.setDeleted(true);
             webApiService.update(api);
@@ -118,14 +127,14 @@ public class WebApiController extends BaseController {
         } else if (type == 1) {
             ApiResponse response = apiResponseService.findById(id);
             if (response == null || response.getDeleted()) {
-                return fail("api not exist.");
+                return fail(API_NOT_EXIST);
             }
             WebApi api = webApiService.findById(response.getSequenceId());
             if (api.getDeleted()) {
-                return fail("api not exist.");
+                return fail(API_NOT_EXIST);
             }
             if (!hasEmptyString(api.getAuthCode()) && !api.getAuthCode().equals(authCode)) {
-                return fail("鉴权失败!");
+                return fail(AUTH_FAIL);
             }
             response.setDeleted(true);
             apiResponseService.update(response);
@@ -138,14 +147,14 @@ public class WebApiController extends BaseController {
     public Object updateCurrentResponse(@RequestParam Long apiId, @RequestParam Long respId, String authCode) {
         WebApi api = webApiService.findById(apiId);
         if (api == null || api.getDeleted()) {
-            return fail("api not exist.");
+            return fail(API_NOT_EXIST);
         }
         if (!hasEmptyString(api.getAuthCode()) && !api.getAuthCode().equals(authCode)) {
-            return fail("鉴权失败!");
+            return fail(AUTH_FAIL);
         }
         ApiResponse response = apiResponseService.findById(respId);
         if (response == null || response.getDeleted()) {
-            return fail("api not exist.");
+            return fail(API_NOT_EXIST);
         }
         api.setResponseId(response.getId());
 
@@ -158,23 +167,18 @@ public class WebApiController extends BaseController {
         Map ctx = UrlUtil.getRequestParams(getServletRequest());
         WebApi api = webApiService.findByUUID(uuid);
         if (api == null) {
-            return fail("api not exist.");
+            return fail(API_NOT_EXIST);
         }
-        ApiResponse response = apiResponseService.findById(api.getResponseId());
-        if (response == null || response.getDeleted()) {
-            return fail("not response available.");
-        }
-        if (CompareUtils.inAny(api.getMethod(), "ALL", "GET")) {
-            return fail("method not support:" + api.getMethod());
-        }
+
+        ApiResponse response = null;
         try {
-            String resp = GroovyEngineUtils.instanceGroovyEngine(response.getResponseBody(), ctx);
-            apiCallLogService.log(api.getId(), response.getId(), uuid, resp, "GET API V2",getSourceIp());
-            return resp;
+            response = apiResponseService.lastestResponse(api);
         } catch (Exception e) {
-            logger.error("api call failed!,uuid:{},request:{}", uuid, UrlUtil.getFullUrl(getServletRequest()), e);
-            return fail("call api error!" + e.getMessage());
+            logger.error("call api failed!,uuid:{}", uuid, e);
+            return fail(e.getMessage());
         }
+
+        return buildResp(uuid, ctx, api, response, "GET API V2");
     }
 
     @PostMapping("/api")
@@ -182,28 +186,64 @@ public class WebApiController extends BaseController {
         String uuid = getString(map, "uuid");
         WebApi api = webApiService.findByUUID(uuid);
         if (api == null) {
-            return fail("api not exist.");
+            return fail(API_NOT_EXIST);
         }
-        ApiResponse response = apiResponseService.findById(api.getResponseId());
-        if (response == null || response.getDeleted()) {
-            return fail("not response available.");
-        }
-        if (CompareUtils.inAny(api.getMethod(), "ALL", "POST")) {
-            return fail("method not support:" + api.getMethod());
-        }
+        ApiResponse response = null;
         try {
-            String resp = GroovyEngineUtils.instanceGroovyEngine(response.getResponseBody(), map);
-            apiCallLogService.log(api.getId(), response.getId(), toJsonObject(map).toJSONString(), resp, "POST API",getSourceIp());
-            return resp;
+            response = apiResponseService.lastestResponse(api);
         } catch (Exception e) {
-            logger.error("api call failed!,uuid:{},request:{}", uuid, map, e);
-            return fail("call api error!" + e.getMessage());
+            logger.error("call api failed!,uuid:{}", uuid, e);
+            return fail(e.getMessage());
         }
+
+        return buildResp(uuid, map, api, response, "POST API");
     }
 
     @GetMapping("api")
     public Object get(@RequestParam String act) {
+        String fullUrl = UrlUtil.getFullUrl(getServletRequest());
+        int index = fullUrl.indexOf("?act=");
+        fullUrl = fullUrl.substring(index + 5);
+        WebApi api = webApiService.findBySourceUrl(fullUrl);
+        if (api == null) {
+            return fail(API_NOT_EXIST);
+        }
+        ApiResponse response = null;
+        try {
+            response = apiResponseService.lastestResponse(api);
+        } catch (Exception e) {
+            logger.error("call apiV1 failed!,full url:{}", fullUrl, e);
+            return fail(e.getMessage());
+        }
 
-        return success();
+        return buildResp(api.getUuid(), null, api, response, "GET API V1");
+    }
+
+    @GetMapping("apiDetail")
+    public Object apiDetail(@RequestParam Long apiId) {
+        WebApi api = webApiService.findById(apiId);
+        if (api == null || api.getDeleted()) {
+            return fail(API_NOT_EXIST);
+        }
+
+        JSONObject ret = newJSONObject();
+        api.setAuthCode(null);
+
+        ret.put("api",api);
+        ret.put("history",apiCallLogService.findRespHistoryByApiId(apiId));
+        ret.put("resps",apiResponseService.findByApiId(apiId));
+
+        return success(ret,null);
+    }
+
+    private Object buildResp(String uuid, Map ctx, WebApi api, ApiResponse response, String remark) {
+        try {
+            String resp = GroovyEngineUtils.instanceGroovyEngine(response.getResponseBody(), ctx);
+            apiCallLogService.log(api.getId(), response.getId(), uuid, resp, remark, getSourceIp());
+            return resp;
+        } catch (Exception e) {
+            logger.error("api call failed!,uuid:{},request:{}", uuid, UrlUtil.getFullUrl(getServletRequest()), e);
+            return fail("call api error!" + e.getMessage());
+        }
     }
 }

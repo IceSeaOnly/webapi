@@ -17,4 +17,11 @@ public class WebApiService extends BaseService<WebApi> {
         exp.setUuid(uuid);
         return queryOne(exp);
     }
+
+    public WebApi findBySourceUrl(String fullUrl) {
+        WebApi exp = new WebApi();
+        exp.setDeleted(false);
+        exp.setOriginalUrl(fullUrl);
+        return queryOne(exp);
+    }
 }

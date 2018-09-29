@@ -13,8 +13,8 @@
     </modules>
     <packaging>pom</packaging>
 
-    <name>starter</name>
-    <description>icesea's quick starter</description>
+    <name>webapi</name>
+    <description>webapi v2</description>
 
     <parent>
         <groupId>org.springframework.boot</groupId>
