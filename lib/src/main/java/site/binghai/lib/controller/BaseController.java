@@ -9,6 +9,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import site.binghai.lib.entity.SessionDataBundle;
 import site.binghai.lib.interfaces.SessionPersistent;
 import site.binghai.lib.utils.BaseBean;
+import site.binghai.lib.utils.UrlUtil;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
@@ -42,6 +43,10 @@ public class BaseController extends BaseBean {
 
     public HttpSession getSession() {
         return getServletRequest().getSession();
+    }
+
+    public String getSourceIp(){
+        return UrlUtil.getIpAdrress(getServletRequest());
     }
 
     public <T extends SessionPersistent> T getSessionPersistent(Class<T> sp) {
