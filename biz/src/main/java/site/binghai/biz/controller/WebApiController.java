@@ -9,18 +9,17 @@ import site.binghai.biz.service.ApiCallLogService;
 import site.binghai.biz.service.ApiResponseService;
 import site.binghai.biz.service.WebApiService;
 import site.binghai.lib.controller.BaseController;
-import site.binghai.lib.utils.CompareUtils;
-import site.binghai.lib.utils.GroovyEngineUtils;
-import site.binghai.lib.utils.TokenGenerator;
-import site.binghai.lib.utils.UrlUtil;
+import site.binghai.lib.utils.*;
 
 import java.security.PublicKey;
+import java.util.List;
 import java.util.Map;
 
 /**
  * @author huaishuo
  * @date 2018/09/28
  */
+@CrossOrigin("*")
 @RestController
 public class WebApiController extends BaseController {
     @Autowired
@@ -70,20 +69,45 @@ public class WebApiController extends BaseController {
         return success();
     }
 
+    @GetMapping("list")
+    public Object list(@RequestParam Integer page) {
+        Long total = webApiService.count();
+        if (page < 0) { page = 0; }
+
+        List<WebApi> ls = emptyList();
+        ls.addAll(webApiService.findAll(9999));
+        ls.sort((a, b) -> b.getId().intValue() - a.getId().intValue());
+
+        int start = Math.min(total.intValue(), 20 * page);
+        int end = Math.min(total.intValue(), 20 * (page + 1));
+        ls = ls.subList(start, end);
+
+        JSONObject data = newJSONObject();
+        data.put("list", ls);
+        data.put("total", total);
+        data.put("page", page);
+        data.put("pageSize", 20);
+        return success(data, null);
+    }
+
     @PostMapping("createResponse")
     public Object createResponse(@RequestBody Map map, Integer bind) {
-        Long webApiId = getLong(map, "apiId");
+        String uuid = getString(map, "uuid");
         String authCode = getString(map, "authCode");
         String name = getString(map, "name");
         String responseBody = getString(map, "responseBody");
 
-        if (hasEmptyString(responseBody, name)) {
+        if (hasEmptyString(responseBody)) {
             return fail("必须设定返回值和备注!");
         }
 
-        WebApi api = webApiService.findById(webApiId);
+        if (hasEmptyString(name)) {
+            name = TimeTools.now() + "更新";
+        }
+
+        WebApi api = webApiService.findByUUID(uuid);
         if (api == null || api.getDeleted()) {
-            return fail("api not found.");
+            return fail(API_NOT_EXIST);
         }
 
         if (!hasEmptyString(api.getAuthCode()) && !api.getAuthCode().equals(authCode)) {
@@ -91,10 +115,11 @@ public class WebApiController extends BaseController {
         }
 
         ApiResponse response = new ApiResponse();
-        response.setCreateIp(UrlUtil.getFullUrl(getServletRequest()));
-        response.setSequenceId(webApiId);
+        response.setCreateIp(UrlUtil.getIpAdrress(getServletRequest()));
+        response.setSequenceId(api.getId());
         response.setVersion(api.getNextVersion());
         response.setResponseBody(responseBody);
+        response.setDeleted(false);
         response.setName(name);
 
         apiResponseService.save(response);
@@ -143,8 +168,11 @@ public class WebApiController extends BaseController {
         return success();
     }
 
-    @GetMapping("updateCurrentResponse")
-    public Object updateCurrentResponse(@RequestParam Long apiId, @RequestParam Long respId, String authCode) {
+    @PostMapping("updateCurrentResponse")
+    public Object updateCurrentResponse(@RequestBody Map map) {
+        Long apiId = getLong(map, "apiId");
+        Long respId = getLong(map, "respId");
+        String authCode = getString(map, "authCode");
         WebApi api = webApiService.findById(apiId);
         if (api == null || api.getDeleted()) {
             return fail(API_NOT_EXIST);
@@ -157,13 +185,14 @@ public class WebApiController extends BaseController {
             return fail(API_NOT_EXIST);
         }
         api.setResponseId(response.getId());
+        webApiService.update(api);
 
         apiCallLogService.log(apiId, respId, null, null, "updateCurrentResponse", getSourceIp());
         return success();
     }
 
     @GetMapping("/api/{uuid}")
-    public Object getV2(@PathVariable(value = "uuid") String uuid) {
+    public Object getV2(@PathVariable(value = "uuid") String uuid, Long respId) {
         Map ctx = UrlUtil.getRequestParams(getServletRequest());
         WebApi api = webApiService.findByUUID(uuid);
         if (api == null) {
@@ -172,7 +201,7 @@ public class WebApiController extends BaseController {
 
         ApiResponse response = null;
         try {
-            response = apiResponseService.lastestResponse(api);
+            response = apiResponseService.lastestResponse(api, respId);
         } catch (Exception e) {
             logger.error("call api failed!,uuid:{}", uuid, e);
             return fail(e.getMessage());
@@ -185,12 +214,13 @@ public class WebApiController extends BaseController {
     public Object post(@RequestBody Map map) {
         String uuid = getString(map, "uuid");
         WebApi api = webApiService.findByUUID(uuid);
+        Long respId = getLong(map, "respId");
         if (api == null) {
             return fail(API_NOT_EXIST);
         }
         ApiResponse response = null;
         try {
-            response = apiResponseService.lastestResponse(api);
+            response = apiResponseService.lastestResponse(api, respId);
         } catch (Exception e) {
             logger.error("call api failed!,uuid:{}", uuid, e);
             return fail(e.getMessage());
@@ -200,7 +230,7 @@ public class WebApiController extends BaseController {
     }
 
     @GetMapping("api")
-    public Object get(@RequestParam String act) {
+    public Object get(@RequestParam String act, Long respId) {
         String fullUrl = UrlUtil.getFullUrl(getServletRequest());
         int index = fullUrl.indexOf("?act=");
         fullUrl = fullUrl.substring(index + 5);
@@ -210,7 +240,7 @@ public class WebApiController extends BaseController {
         }
         ApiResponse response = null;
         try {
-            response = apiResponseService.lastestResponse(api);
+            response = apiResponseService.lastestResponse(api, respId);
         } catch (Exception e) {
             logger.error("call apiV1 failed!,full url:{}", fullUrl, e);
             return fail(e.getMessage());
@@ -219,21 +249,31 @@ public class WebApiController extends BaseController {
         return buildResp(api.getUuid(), null, api, response, "GET API V1");
     }
 
-    @GetMapping("apiDetail")
-    public Object apiDetail(@RequestParam Long apiId) {
-        WebApi api = webApiService.findById(apiId);
+    @RequestMapping("apiDetail")
+    public Object apiDetail(@RequestParam String uuid) {
+        WebApi api = webApiService.findByUUID(uuid);
         if (api == null || api.getDeleted()) {
             return fail(API_NOT_EXIST);
         }
 
+        Long apiId = api.getId();
         JSONObject ret = newJSONObject();
         api.setAuthCode(null);
 
-        ret.put("api",api);
-        ret.put("history",apiCallLogService.findRespHistoryByApiId(apiId));
-        ret.put("resps",apiResponseService.findByApiId(apiId));
+        List retList = emptyList();
+        List<ApiResponse> list = apiResponseService.findByApiId(apiId);
+        list.forEach(v -> {
+            if (api.getResponseId().equals(v.getId())) {
+                retList.add(0, v);
+            } else {
+                retList.add(v);
+            }
+        });
+        ret.put("api", api);
+        ret.put("history", apiCallLogService.findRespHistoryByApiId(apiId));
+        ret.put("resps", retList);
 
-        return success(ret,null);
+        return success(ret, null);
     }
 
     private Object buildResp(String uuid, Map ctx, WebApi api, ApiResponse response, String remark) {

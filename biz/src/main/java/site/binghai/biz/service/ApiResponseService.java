@@ -16,8 +16,8 @@ import java.util.List;
  */
 @Service
 public class ApiResponseService extends BaseService<ApiResponse> {
-    public ApiResponse lastestResponse(WebApi api) throws Exception {
-        ApiResponse response = findById(api.getResponseId());
+    public ApiResponse lastestResponse(WebApi api, Long respId) throws Exception {
+        ApiResponse response = findById(respId == null ? api.getResponseId() : respId);
         if (response == null || response.getDeleted()) {
             throw new Exception("");
         }
